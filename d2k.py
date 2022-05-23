@@ -5,6 +5,8 @@ import xml.etree.ElementTree as xmlet
 from copy import deepcopy
 from functools import reduce
 
+import numpy as np
+
 from tensorflow.keras import Input, Model
 from tensorflow.keras.layers import *
 #import tensorflow_addons as tfa
@@ -73,7 +75,14 @@ class D2k:
     
     for l in layers:
       names, attrib = deepcopy(D['layers'][l[0]]), {}
-      weights = [float(w) for w in l[2].split() if w]
+      
+      weights = []
+      # load columns as weight arrays
+      for i in range(0, len(l[2].strip().split('\n')[0].split())):
+        for ln in l[2].strip().split('\n'):
+          if i == len(weights):
+            weights += [[]]
+          weights[i] += [float(ln.split()[i])]
       
       for i,n in enumerate(names):
         # calls map_attribute for each attribute in l[1]
@@ -109,8 +118,8 @@ class D2k:
           if l[0] != 'skip': # tag or layer that references a tag
             self.data[1][len(self.data[0])] += [len(self.data[0])-1]
         
-        # only first layer gets the weights (?)
-        self.data[0] += [(n, attrib, weights if not i else [])]
+        # only last layer gets the weights (?)
+        self.data[0] += [(n, attrib, weights if i == len(names)-1 else [])]
     
     # remove tag attributes
     for tp in self.data[0]:
@@ -124,7 +133,7 @@ class D2k:
     
     # instantiate classes from class names
     knodes = list(map(lambda n: globals()[n[0]](**n[1]), self.data[0]))
-    inputs, outputs, y = [], [], knodes
+    inputs, outputs, y = [], [], deepcopy(knodes)
     nodes, edges = self.data[0], self.data[1]
     
     for idx in edges:
@@ -138,6 +147,9 @@ class D2k:
           y[idx] = knodes[idx](layer_inputs)
         else: # layer call does not expect a list
           y[idx] = knodes[idx](*layer_inputs)
+        
+        # set weights
+        knodes[idx].set_weights(np.array(self.data[0][idx][2]))
         
         if not len(layer_outputs): # no layer uses this one's outputs
           outputs += [y[idx]] # it's an output
