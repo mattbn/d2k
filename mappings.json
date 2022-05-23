@@ -1,0 +1,90 @@
+
+{
+  "d" : {
+    "losses" : {
+      "loss_multiclass_log" : "SparseCategoricalCrossentropy"
+    }, 
+    "layers" : {
+      "tag" : ["Layer"], 
+      "skip" : ["Layer"], 
+      "fc" : ["Dense"], 
+      "relu" : ["ReLU"], 
+      "softmax" : ["Softmax"], 
+      "multiply" : ["Rescaling"], 
+      "add_prev" : ["Add"], 
+      "affine_con" : ["BatchNormalization"], 
+      "input_rgb_image" : ["Input", "Normalization"], 
+      "input_rgb_image_sized" : ["Input", "Normalization"], 
+      "con" : ["ZeroPadding2D", "Conv2D"], 
+      "avg_pool" : ["ZeroPadding2D", "AveragePooling2D"], 
+      "max_pool" : ["ZeroPadding2D", "MaxPooling2D"]
+    }, 
+    "attrib" : {
+      "tag" : {
+        "id" : "tag"
+      }, 
+      "skip" : {
+        "id" : "tag"
+      }, 
+      "fc" : {
+        "num_outputs" : "units"
+      }, 
+      "relu" : {}, 
+      "softmax" : {}, 
+      "multiply" : {
+        "val" : "scale"
+      }, 
+      "add_prev" : {
+        "tag" : "tag"
+      }, 
+      "affine_con" : {}, 
+      "input_rgb_image" : {}, 
+      "input_rgb_image_sized" : {
+        "nr" : "shape", 
+        "nc" : "shape"
+      }, 
+      "con" : {
+        "num_filters" : "filters", 
+        "nr" : "kernel_size", 
+        "nc" : "kernel_size", 
+        "padding_x" : "padding", 
+        "padding_y" : "padding", 
+        "stride_x" : "strides", 
+        "stride_y" : "strides"
+      }, 
+      "avg_pool" : {
+        "nr" : "pool_size", 
+        "nc" : "pool_size", 
+        "padding_x" : "padding", 
+        "padding_y" : "padding", 
+        "stride_x" : "strides", 
+        "stride_y" : "strides"
+      }, 
+      "max_pool" : {
+        "nr" : "pool_size", 
+        "nc" : "pool_size", 
+        "padding_x" : "padding", 
+        "padding_y" : "padding", 
+        "stride_x" : "strides", 
+        "stride_y" : "strides"
+      }
+    }
+  }, 
+  "k" : {
+    "attrib" : {
+      "Input" : ["shape"], 
+      "Normalization" : [], 
+      "Conv2D" : ["filters", "kernel_size", "strides"], 
+      "ZeroPadding2D" : ["padding"], 
+      "AveragePooling2D" : ["pool_size", "strides"], 
+      "MaxPooling2D" : ["pool_size", "strides"], 
+      "ReLU" : [], 
+      "Softmax" : [], 
+      "BatchNormalization" : [], 
+      "Dense" : ["units"], 
+      "Add" : ["tag"], 
+      "Layer" : ["tag"], 
+      "Rescaling" : ["scale"]
+    }
+  }
+}
