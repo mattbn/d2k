@@ -13,8 +13,8 @@
       "multiply" : ["Rescaling"], 
       "add_prev" : ["Add"], 
       "affine_con" : ["BatchNormalization"], 
-      "input_rgb_image" : ["Input", "Normalization"], 
-      "input_rgb_image_sized" : ["Input", "Normalization"], 
+      "input_rgb_image" : ["Input"], 
+      "input_rgb_image_sized" : ["Input"], 
       "con" : ["ZeroPadding2D", "Conv2D"], 
       "avg_pool" : ["ZeroPadding2D", "AveragePooling2D"], 
       "max_pool" : ["ZeroPadding2D", "MaxPooling2D"]
@@ -73,7 +73,6 @@
   "k" : {
     "attrib" : {
       "Input" : ["shape"], 
-      "Normalization" : [], 
       "Conv2D" : ["filters", "kernel_size", "strides"], 
       "ZeroPadding2D" : ["padding"], 
       "AveragePooling2D" : ["pool_size", "strides"], 
