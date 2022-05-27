@@ -65,6 +65,20 @@ class D2k:
       return kattrib
     #
     
+    def load_weights(str_weights, delta):
+      str_weights = str_weights.strip().split('\n')
+      weights = [[], []] # [ weights, biases ]
+      
+      # load columns as weight arrays
+      for i in range(0, len(str_weights[0].split())):
+        for j,ln in enumerate(str_weights):
+          k = 0 if j < len(str_weights)-delta else 1
+          if i == len(weights[k]):
+            weights[k] += [[]]
+          weights[k][i] += [float(ln.split()[i])]
+      return weights
+    #
+    
     D,K = self.mappings['d'], self.mappings['k']
     
     # extract losses
@@ -76,13 +90,13 @@ class D2k:
     for l in layers:
       names, attrib = deepcopy(D['layers'][l[0]]), {}
       
-      weights = []
-      # load columns as weight arrays
-      for i in range(0, len(l[2].strip().split('\n')[0].split())):
-        for ln in l[2].strip().split('\n'):
-          if i == len(weights):
-            weights += [[]]
-          weights[i] += [float(ln.split()[i])]
+      delta = 0
+      if 'use_bias' in l[1]:
+        if 'fc' == l[0]:
+          delta = 1
+        elif 'con' == l[0]:
+          delta = int(l[1]['num_filters'])
+      weights = load_weights(l[2], delta)
       
       for i,n in enumerate(names):
         # calls map_attribute for each attribute in l[1]
@@ -118,6 +132,9 @@ class D2k:
           if l[0] != 'skip': # tag or layer that references a tag
             self.data[1][len(self.data[0])] += [len(self.data[0])-1]
         
+        # remove biases if not used
+        if len(weights) and not len(weights[1]):
+          weights = weights[0]
         # only last layer gets the weights (?)
         self.data[0] += [(n, attrib, weights if i == len(names)-1 else [])]
     
