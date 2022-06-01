@@ -163,7 +163,42 @@ class Layers:
   
   def add_prev_(attrib, *args, **kwargs):
     def add_prev__(layers, *args, **kwargs):
-      return [()]
+      res, prev = [], layers[-1][0]
+      ref = layers[Layers.get_ref_id(layers, int(attrib['tag']))]
+      shapes = (
+        tuple(map(lambda x: x if x else 0, prev.shape))[1:], 
+        tuple(map(lambda x: x if x else 0, ref.shape))[1:]
+      )
+      delta = tuple(abs(x-y) if x and y else 0 for x,y in zip(*shapes))
+      
+      if delta[0] or delta[1]: # x or y is not 0
+        res += [(
+          tf.keras.layers.ZeroPadding2D(
+            padding=((0, delta[0]), (0, delta[1]))
+          )(prev), 
+          'ZeroPadding2D'
+        )]
+        prev = res[-1][0]
+      if delta[2]:
+        res += [(
+          tf.keras.layers.Concatenate(axis=3)([
+            prev, 
+            tf.keras.Input(
+              tensor=tf.zeros(
+                prev.shape[:-1] + [delta[2]], 
+                np.float32
+              )
+            )
+          ]), 
+          'Concatenate'
+        )]
+        prev = res[-1][0]
+      
+      return res + [(
+        tf.keras.layers.Add()([prev, ref]), 
+        'Add'
+      )]
+    #
     return add_prev__
   #
   
