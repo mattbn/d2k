@@ -1,37 +1,23 @@
 
-import json
 import xml.etree.ElementTree as xmlet
-
-from copy import deepcopy
-from functools import reduce
-
-import numpy as np
-
-from tensorflow.keras import Input, Model
-from tensorflow.keras.layers import *
-#import tensorflow_addons as tfa
-
+import numpy as np 
+import tensorflow as tf 
+from functools import reduce 
 
 class D2k:
   
-  def load_mappings(path):
-    with open(path) as f:
-      return json.loads(''.join(f.readlines()))
+  def __init__(self):
+    self.data = []
   #
   
-  def __init__(self, mappings=load_mappings('mappings.json')):
-    self.mappings = mappings
-    self.data = None
-  #
-  
-  def from_string(self, text):
+  def from_string(self, s):
     validate = lambda x: x if x else ''
     self.data = list(
       map(
-        lambda x: 
+        lambda x:
           (x.attrib['type'], x.attrib, validate(x.text)) if not len(x) else 
           (x[0].tag, {**x.attrib, **x[0].attrib}, validate(x[0].text)), 
-        xmlet.fromstring(text)[::-1]
+        xmlet.fromstring(s)[::-1]
       )
     )
     return self
@@ -42,140 +28,300 @@ class D2k:
       return self.from_string(''.join(f.readlines()))
   #
   
-  def convert(self):
-    def map_attribute(name, attrib, attr, idx, kname, kattrib, data, maps):
-      dmaps = maps['d']['attrib'][name]
-      kmaps = maps['k']['attrib'][kname]
-      cast = lambda x:x if x != str(x) else int(x) if x.isdigit() else float(x)
-      
-      # check if there is a mapping for that attribute
-      if attr in dmaps and dmaps[attr] in kmaps:
-        if dmaps[attr] in kattrib: # attribute was already mapped
-          # then it's a multi-dimensional attribute => should be a tuple
-          if type(kattrib[dmaps[attr]]) != type(()):
-            kattrib[dmaps[attr]] = (kattrib[dmaps[attr]],)
-          if attr in {'nr','nc'}: # special case
-            kattrib[dmaps[attr]] = (*kattrib[dmaps[attr]], cast(attrib[attr]))
-          else:
-            kattrib[dmaps[attr]] = (cast(attrib[attr]), *kattrib[dmaps[attr]])
-        
-        else: # attribute is being mapped for the first time
-          kattrib[dmaps[attr]] = cast(attrib[attr])
-      
-      return kattrib
-    #
-    
-    def load_weights(str_weights, delta):
-      str_weights = str_weights.strip().split('\n')
-      weights = [[], []] # [ weights, biases ]
-      
-      # load columns as weight arrays
-      for i in range(0, len(str_weights[0].split())):
-        for j,ln in enumerate(str_weights):
-          k = 0 if j < len(str_weights)-delta else 1
-          if i == len(weights[k]):
-            weights[k] += [[]]
-          weights[k][i] += [float(ln.split()[i])]
-      return weights
-    #
-    
-    D,K = self.mappings['d'], self.mappings['k']
-    
-    # extract losses
-    losses = [D['losses'][l[0]] for l in self.data if l[0] in D['losses']]
-    layers = list(filter(lambda x: x[0] in D['layers'], self.data))
-    
-    self.data = [[], {}, losses]
-    
-    for l in layers:
-      names, attrib = deepcopy(D['layers'][l[0]]), {}
-      
-      delta = 0
-      if 'use_bias' in l[1]:
-        if 'fc' == l[0]:
-          delta = 1
-        elif 'con' == l[0]:
-          delta = int(l[1]['num_filters'])
-      weights = load_weights(l[2], delta)
-      
-      for i,n in enumerate(names):
-        # calls map_attribute for each attribute in l[1]
-        attrib = reduce(
-          lambda A, k: # A: mapped attributes, k: attribute names iterator
-            map_attribute(l[0], l[1], k, i, n, A, self.data, self.mappings), 
-          l[1], 
-          {}
-        )
-        
-        # special cases
-        if n == 'Input':
-          if 'shape' not in attrib:
-            attrib['shape'] = (None, None, 3)
-          elif len(attrib['shape']) < 3:
-            attrib['shape'] = (*attrib['shape'], 3)
-        elif n in {'Conv2D', 'AveragePooling2D', 'MaxPooling2D'}:
-          attrib['padding'] = 'valid'
-        if 'pool_size' in attrib and type(attrib['pool_size']) == type(()):
-          attrib['pool_size'] = tuple(
-            x if x else 1 for x in attrib['pool_size']
+  def convert(self, **model_kwargs):
+    losses = {'loss_multiclass_log' : 'SparseCategoricalCrossentropy'}
+    # data will be a list of [layers, losses]
+    self.data = [ # the first element is a list of (KerasTensor, layer name)
+      reduce( # L: mapped layers, x: current layer(unmapped)
+        lambda L,x: L + getattr(Layers, x[0]+'_')(*x[1:])(L), 
+        filter( # y: current layer (unmapped)
+          lambda y: y[0]+'_' in Layers.__dict__, 
+          self.data
+        ), 
+        []
+      ), 
+      list( # the second element is a list of losses
+        map(
+          lambda x: losses[x[0]], 
+          filter(
+            lambda y: y[0] in losses, 
+            self.data
           )
-        
-        # generate edges
-        self.data[1][len(self.data[0])] = [] # edge list
-        if n != 'Input':
-          if 'tag' in attrib:
-            if l[0] != 'tag': # skip or layer that references a tag
-              for j,m in enumerate(self.data[0][::-1]):
-                if 'tag' in m[1] and m[1]['tag'] == attrib['tag']:
-                  self.data[1][len(self.data[0])] += [len(self.data[0])-1-j]
-                  break
-          if l[0] != 'skip': # tag or layer that references a tag
-            self.data[1][len(self.data[0])] += [len(self.data[0])-1]
-        
-        # remove biases if not used
-        if len(weights) and not len(weights[1]):
-          weights = weights[0]
-        # only last layer gets the weights (?)
-        self.data[0] += [(n, attrib, weights if i == len(names)-1 else [])]
+        )
+      )
+    ]
     
-    # remove tag attributes
-    for tp in self.data[0]:
-      if 'tag' in tp[1]:
-        tp[1].pop('tag')
+    # build the model
+    self.data[0] = tf.keras.Model(
+      list(
+        map(
+          lambda x: x[0], 
+          filter(lambda y: y[1] == 'Input', self.data[0])
+        )
+      ), 
+      [self.data[0][-1][0]], 
+      **model_kwargs
+    )
     
     return self
   #
+#
+
+class Layers:
   
-  def build(self, **model_kwargs):
+  def get_ref_id(layers, rid):
+    tags = list(
+      map(
+        lambda x: len(layers)-1-x[0], 
+        filter(
+          lambda y: y[1][1] == 'Tag' and y[1][0].__dict__['tag'] == rid, 
+          enumerate(layers[::-1])
+        )
+      )
+    )
+    return tags[0] if len(tags) else -1
+  #
+  
+  ##############
+  ##  layers  ##
+  ##############
+  
+  def input_rgb_image_(*args, **kwargs):
+    def input_rgb_image__(*args, **kwargs):
+      return [(
+        tf.keras.Input(
+          shape=(None, None, 3)
+        ), 
+        'Input'
+      )]
+    #
+    return input_rgb_image__
+  #
+  
+  def input_rgb_image_sized_(attrib, *args, **kwargs):
+    def input_rgb_image_sized__(*args, **kwargs):
+      return [(
+        tf.keras.Input(
+          shape=(
+            int(attrib['nr']), 
+            int(attrib['nc']), 
+            3
+          )
+        ), 
+        'Input'
+      )]
+    #
+    return input_rgb_image_sized__
+  #
+  
+  def relu_(*args, **kwargs):
+    def relu__(layers, *args, **kwargs):
+      return [(tf.keras.layers.ReLU()(layers[-1][0]), 'ReLU')]
+    #
+    return relu__
+  #
+  
+  def softmax_(*args, **kwargs):
+    def softmax__(layers, *args, **kwargs):
+      return [(tf.keras.layers.Softmax()(layers[-1][0]), 'Softmax')]
+    #
+    return softmax__
+  #
+  
+  def multiply_(attrib, *args, **kwargs):
+    def multiply(layers, *args, **kwargs):
+      return [(
+        tf.keras.layers.Rescaling(
+          scale=float(attrib['val'])
+        )(layers[-1][0]), 
+        'Rescaling'
+      )]
+    #
+    return multiply__
+  #
+  
+  def tag_(attrib, *args, **kwargs):
+    def tag__(layers, *args, **kwargs):
+      res = tf.keras.layers.Layer()(layers[-1][0])
+      res.__dict__['tag'] = int(attrib['id'])
+      return [(res, 'Tag')]
+    #
+    return tag__
+  #
+  
+  def skip_(attrib, *args, **kwargs):
+    def skip__(layers, *args, **kwargs):
+      return [(
+        tf.keras.layers.Layer()(
+          layers[Layers.get_ref_id(layers, int(attrib['id']))]
+        ), 
+        'Skip'
+      )]
+    #
+    return skip__
+  #
+  
+  def add_prev_(attrib, *args, **kwargs):
+    def add_prev__(layers, *args, **kwargs):
+      return [()]
+    return add_prev__
+  #
+  
+  def affine_con_(attrib, str_weights, *args, **kwargs):
+    def affine_con__(layers, *args, **kwargs):
+      layer = tf.keras.layers.LayerNormalization()
+      res = layer(layers[-1][0])
+      layer.set_weights(
+        np.array([
+          np.array(str_weights[:-len(str_weights)//2]).astype(np.float32), 
+          np.array(str_weights[len(str_weights)//2:]).astype(np.float32)
+        ], dtype=object)
+      )
+      return [(res, 'LayerNormalization')]
+    #
+    return affine_con__
+  #
+  
+  def avg_pool_(attrib, *args, **kwargs):
+    def avg_pool__(layers, *args, **kwargs):
+      res = [(
+        tf.keras.layers.ZeroPadding2D(
+          padding=(int(attrib['padding_x']), int(attrib['padding_y']))
+        )(layers[-1][0]), 
+        'ZeroPadding2D'
+      )]
+      res += [(
+        tf.keras.layers.AveragePooling2D(
+          padding='valid', 
+          pool_size=(int(attrib['nr']), int(attrib['nc'])), 
+          strides=(int(attrib['stride_x']), int(attrib['stride_y']))
+        )(res[-1][0]), 
+        'AveragePooling2D'
+      )]
+      return res
+    #
+    def global_avg_pool__(layers, *args, **kwargs):
+      return [(
+        tf.keras.layers.GlobalAveragePooling2D(
+          keepdims=True
+        )(layers[-1][0]), 
+        'GlobalAveragePooling2D'
+      )]
+    #
+    if int(attrib['nr']) and int(attrib['nc']):
+      return avg_pool__
+    return global_avg_pool__
+  #
+  
+  def max_pool_(attrib, *args, **kwargs):
+    def max_pool__(layers, *args, **kwargs):
+      res = [(
+        tf.keras.layers.ZeroPadding2D(
+          padding=(int(attrib['padding_x']), int(attrib['padding_y']))
+        )(layers[-1][0]), 
+        'ZeroPadding2D'
+      )]
+      res += [(
+        tf.keras.layers.MaxPooling2D(
+          padding='valid', 
+          pool_size=(int(attrib['nr']), int(attrib['nc'])), 
+          strides=(int(attrib['stride_x']), int(attrib['stride_y']))
+        )(res[-1][0]), 
+        'MaxPooling2D'
+      )]
+      return res
+    #
+    def global_max_pool__(layers, *args, **kwargs):
+      return [(
+        tf.keras.layers.GlobalMaxPooling2D(
+          keepdims=True
+        )(layers[-1][0]), 
+        'GlobalMaxPooling2D'
+      )]
+    #
+    if int(attrib['nr']) and int(attrib['nc']):
+      return max_pool__
+    return global_max_pool__
+  #
+  
+  def fc_(attrib, str_weights, *args, **kwargs):
+    str_weights = list(
+      filter(
+        lambda x: x, 
+        str_weights.split('\n')
+      )
+    )
     
-    # instantiate classes from class names
-    knodes = list(map(lambda n: globals()[n[0]](**n[1]), self.data[0]))
-    inputs, outputs, y = [], [], deepcopy(knodes)
-    nodes, edges = self.data[0], self.data[1]
-    
-    for idx in edges:
-      if nodes[idx][0] != 'Input':
-        # get output of all layers that connect to the current one
-        layer_inputs = [y[e] for e in edges[idx]]
-        # get indices for all layers this one connects to
-        layer_outputs = [x for e in edges for x in edges[e] if x == idx]
-        
-        if len(layer_inputs) > 1: # layer call expects a list
-          y[idx] = knodes[idx](layer_inputs)
-        else: # layer call does not expect a list
-          y[idx] = knodes[idx](*layer_inputs)
-        
-        # set weights
-        knodes[idx].set_weights(np.array(self.data[0][idx][2]))
-        
-        if not len(layer_outputs): # no layer uses this one's outputs
-          outputs += [y[idx]] # it's an output
-      else: # it's an input
-        inputs += [knodes[idx]]
-    
-    # build model
-    model = Model(inputs, outputs, **model_kwargs)
-    self.data = [inputs, outputs, model, self.data[2]] # keep losses
-    return self
+    def fc__(layers, *args, **kwargs):
+      res = [(tf.keras.layers.Flatten()(layers[-1][0]), 'Flatten')]
+      layer = tf.keras.layers.Dense(
+        units=int(attrib['num_outputs']), 
+        use_bias=True if attrib['use_bias'] == 'true' else False
+      )
+      res += [(layer(res[-1][0]), 'Dense')]
+      layer.set_weights(
+        np.array(
+          [
+            np.array(
+              list(map(lambda x: x.split(), str_weights))
+            )[:-1].reshape(
+              np.array(res[-2][0].shape)[1], 
+              int(attrib['num_outputs'])
+            ).astype(np.float32). 
+            np.array(str_weights[-1].split()).astype(np.float32)
+          ], 
+          dtype=object
+        ) if 'use_bias' in attrib and attrib['use_bias'] == 'true' else
+        np.array(
+          np.array(list(map(lambda x: x.split(), str_weights))), 
+          dtype=object
+        ).astype(np.float32)
+      )
+      return res
+    #
+    return fc__
+  #
+  
+  def con_(attrib, str_weights, *args, **kwargs):
+    str_weights = str_weights.split()
+    def con__(layers, *args, **kwargs):
+      res = [(
+        tf.keras.layers.ZeroPadding2D(
+          padding=(int(attrib['padding_x']), int(attrib['padding_y']))
+        )(layers[-1][0]), 
+        'ZeroPadding2D'
+      )]
+      layer = tf.keras.layers.Conv2D(
+        padding='valid', 
+        filters=int(attrib['num_filters']), 
+        kernel_size=(int(attrib['nr']), int(attrib['nc'])), 
+        strides=(int(attrib['stride_x']), int(attrib['stride_y']))
+      )
+      res += [(layer(res[-1][0]), 'Conv2D')]
+      layer.set_weights(
+        np.array(
+          [
+            np.array(str_weights[:-int(attrib['num_filters'])]).reshape(
+              int(attrib['nr']), 
+              int(attrib['nc']), 
+              np.array(layers[-1][0].shape)[3], 
+              int(attrib['num_filters'])
+            ).astype(np.float32), 
+            np.array(str_weights[-int(attrib['num_filters']):]).astype(
+              np.float32
+            )
+          ], 
+          dtype=object
+        ) if 'use_bias' in attrib and attrib['use_bias'] == 'true' else 
+        np.array(str_weights, dtype=object).reshape(
+          int(attrib['nr']), 
+          int(attrib['nc']), 
+          np.array(layers[-1][0].shape)[3], 
+          int(attrib['num_filters'])
+        ).astype(np.float32)
+      )
+      return res
+    #
+    return con__
   #
 #
