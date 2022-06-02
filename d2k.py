@@ -142,7 +142,9 @@ class Layers:
   
   def tag_(attrib, *args, **kwargs):
     def tag__(layers, *args, **kwargs):
-      res = tf.keras.layers.Layer()(layers[-1][0])
+      res = tf.keras.layers.Layer(
+        name='tag_' + attrib['id'] + '_' + attrib['idx']
+      )(layers[-1][0])
       res.__dict__['tag'] = int(attrib['id'])
       return [(res, 'Tag')]
     #
@@ -152,8 +154,10 @@ class Layers:
   def skip_(attrib, *args, **kwargs):
     def skip__(layers, *args, **kwargs):
       return [(
-        tf.keras.layers.Layer()(
-          layers[Layers.get_ref_id(layers, int(attrib['id']))]
+        tf.keras.layers.Layer(
+          name='skip_' + attrib['id'] + '_' + attrib['idx']
+        )(
+          layers[Layers.get_ref_id(layers, int(attrib['id']))][0]
         ), 
         'Skip'
       )]
@@ -164,35 +168,79 @@ class Layers:
   def add_prev_(attrib, *args, **kwargs):
     def add_prev__(layers, *args, **kwargs):
       res, prev = [], layers[-1][0]
-      ref = layers[Layers.get_ref_id(layers, int(attrib['tag']))]
-      shapes = (
-        tuple(map(lambda x: x if x else 0, prev.shape))[1:], 
-        tuple(map(lambda x: x if x else 0, ref.shape))[1:]
-      )
-      delta = tuple(abs(x-y) if x and y else 0 for x,y in zip(*shapes))
+      ref = layers[Layers.get_ref_id(layers, int(attrib['tag']))][0]
       
-      if delta[0] or delta[1]: # x or y is not 0
-        res += [(
+      def size_shape(delta, tensors, layer, name, *params):
+        list_or_tuple = lambda *p: [*p] if len(p) > 1 else p[0]
+        r = [(
+          layer(list_or_tuple(
+            tensors[0] if delta < 0 else tensors[1], 
+            *params
+          )), 
+          name
+        )] if delta else []
+        if delta < 0:
+          tensors = (r[0][0], tensors[1])
+        elif delta > 0:
+          tensors = (tensors[0], r[0][0])
+        # returns:
+        # 1 - updated layer list
+        # 2 - updated prev, ref tensors
+        # 3 - tuple of shape difference between prev and ref
+        return res + r, *tensors, tuple(x-y if x and y else 0 for x,y in zip(
+          *(
+            # tensor shapes
+            tuple(map(lambda x: x if x else 0, tensors[0].shape)), 
+            tuple(map(lambda x: x if x else 0, tensors[1].shape))
+          )
+        ))
+      
+      delta = 0
+      res, prev, ref, delta = size_shape(delta, (prev, ref), None, '')
+      
+      if delta[1]: # delta_x != 0
+        res, prev, ref, delta = size_shape(
+          delta[1], (pref, ref), 
           tf.keras.layers.ZeroPadding2D(
-            padding=((0, delta[0]), (0, delta[1]))
-          )(prev), 
+            padding=((0, abs(delta[0])), (0, 0))
+          ), 
+          'ZeroPadding2D', 
+        )
+      
+      if delta[2]: # delta_y != 0
+        res, prev, ref, delta = size_shape(
+          delta[2], (prev, ref), 
+          tf.keras.layers.ZeroPadding2D(
+            padding=((0, 0), (0, abs(delta[1])))
+          ), 
           'ZeroPadding2D'
-        )]
-        prev = res[-1][0]
-      if delta[2]:
-        res += [(
-          tf.keras.layers.Concatenate(axis=3)([
-            prev, 
-            tf.keras.Input(
-              tensor=tf.zeros(
-                prev.shape[:-1] + [delta[2]], 
-                np.float32
-              )
+        )
+      
+      if delta[3]: # delta_z != 0
+        # shape difference
+        shape_delta = prev.shape[1:-1] if delta[3] < 0 else ref.shape[1:-1]
+        shape_delta += [abs(delta[3])]
+        
+        res, prev, ref, delta = size_shape(
+          delta[3], (prev, ref), 
+          tf.keras.layers.Concatenate(axis=3), 
+          'Concatenate', 
+          tf.keras.layers.Lambda(lambda x: x)(
+            tf.zeros_like(
+              tf.Variable(
+                [[[[0 for x in range(0, shape_delta[2])]]]], 
+                shape=[None, None, None, shape_delta[2]]
+              ), 
+              dtype=tf.float32
             )
-          ]), 
-          'Concatenate'
-        )]
-        prev = res[-1][0]
+          )
+          #tf.keras.Input(tensor=tf.zeros_like(
+          #  tf.placeholder(
+          #    tf.float32, 
+          #    shape_delta
+          #  )
+          #))
+        )
       
       return res + [(
         tf.keras.layers.Add()([prev, ref]), 
@@ -203,6 +251,7 @@ class Layers:
   #
   
   def affine_con_(attrib, str_weights, *args, **kwargs):
+    str_weights = str_weights.split()
     def affine_con__(layers, *args, **kwargs):
       layer = tf.keras.layers.LayerNormalization()
       res = layer(layers[-1][0])
@@ -219,18 +268,22 @@ class Layers:
   
   def avg_pool_(attrib, *args, **kwargs):
     def avg_pool__(layers, *args, **kwargs):
-      res = [(
-        tf.keras.layers.ZeroPadding2D(
-          padding=(int(attrib['padding_x']), int(attrib['padding_y']))
-        )(layers[-1][0]), 
-        'ZeroPadding2D'
-      )]
+      res, prev = [], layers[-1][0]
+      if int(attrib['padding_x']) and int(attrib['padding_y']):
+        res += [(
+          tf.keras.layers.ZeroPadding2D(
+            padding=(int(attrib['padding_x']), int(attrib['padding_y']))
+          )(prev), 
+          'ZeroPadding2D'
+        )]
+        prev = res[-1][0]
+      
       res += [(
         tf.keras.layers.AveragePooling2D(
           padding='valid', 
           pool_size=(int(attrib['nr']), int(attrib['nc'])), 
           strides=(int(attrib['stride_x']), int(attrib['stride_y']))
-        )(res[-1][0]), 
+        )(prev), 
         'AveragePooling2D'
       )]
       return res
@@ -250,18 +303,22 @@ class Layers:
   
   def max_pool_(attrib, *args, **kwargs):
     def max_pool__(layers, *args, **kwargs):
-      res = [(
-        tf.keras.layers.ZeroPadding2D(
-          padding=(int(attrib['padding_x']), int(attrib['padding_y']))
-        )(layers[-1][0]), 
-        'ZeroPadding2D'
-      )]
+      res, prev = [], layers[-1][0]
+      if int(attrib['padding_x']) and int(attrib['padding_y']):
+        res += [(
+          tf.keras.layers.ZeroPadding2D(
+            padding=(int(attrib['padding_x']), int(attrib['padding_y']))
+          )(prev), 
+          'ZeroPadding2D'
+        )]
+        prev = res[-1][0]
+      
       res += [(
         tf.keras.layers.MaxPooling2D(
           padding='valid', 
           pool_size=(int(attrib['nr']), int(attrib['nc'])), 
           strides=(int(attrib['stride_x']), int(attrib['stride_y']))
-        )(res[-1][0]), 
+        )(prev), 
         'MaxPooling2D'
       )]
       return res
@@ -302,7 +359,7 @@ class Layers:
             )[:-1].reshape(
               np.array(res[-2][0].shape)[1], 
               int(attrib['num_outputs'])
-            ).astype(np.float32). 
+            ).astype(np.float32), 
             np.array(str_weights[-1].split()).astype(np.float32)
           ], 
           dtype=object
