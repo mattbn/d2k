@@ -236,12 +236,6 @@ class Layers:
               dtype=tf.float32
             )
           )
-          #tf.keras.Input(tensor=tf.zeros_like(
-          #  tf.placeholder(
-          #    tf.float32, 
-          #    shape_delta
-          #  )
-          #))
         )
       
       return res + [(
