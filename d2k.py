@@ -70,6 +70,7 @@ class D2k:
 class Layers:
   
   def get_ref_id(layers, rid):
+    # get tags with id=rid in reverse order
     tags = list(
       map(
         lambda x: len(layers)-1-x[0], 
@@ -129,7 +130,7 @@ class Layers:
   #
   
   def multiply_(attrib, *args, **kwargs):
-    def multiply(layers, *args, **kwargs):
+    def multiply__(layers, *args, **kwargs):
       return [(
         tf.keras.layers.Rescaling(
           scale=float(attrib['val'])
@@ -151,6 +152,7 @@ class Layers:
     return tag__
   #
   
+  # outputs the 'id' layer's output
   def skip_(attrib, *args, **kwargs):
     def skip__(layers, *args, **kwargs):
       return [(
@@ -186,7 +188,7 @@ class Layers:
         # returns:
         # 1 - updated layer list
         # 2 - updated prev, ref tensors
-        # 3 - tuple of shape difference between prev and ref
+        # 3 - tuple of shape differences between prev and ref
         return res + r, *tensors, tuple(x-y if x and y else 0 for x,y in zip(
           *(
             # tensor shapes
@@ -269,7 +271,8 @@ class Layers:
   def avg_pool_(attrib, *args, **kwargs):
     def avg_pool__(layers, *args, **kwargs):
       res, prev = [], layers[-1][0]
-      if int(attrib['padding_x']) and int(attrib['padding_y']):
+      # add padding
+      if int(attrib['padding_x']) or int(attrib['padding_y']):
         res += [(
           tf.keras.layers.ZeroPadding2D(
             padding=(int(attrib['padding_x']), int(attrib['padding_y']))
@@ -304,7 +307,8 @@ class Layers:
   def max_pool_(attrib, *args, **kwargs):
     def max_pool__(layers, *args, **kwargs):
       res, prev = [], layers[-1][0]
-      if int(attrib['padding_x']) and int(attrib['padding_y']):
+      # add padding
+      if int(attrib['padding_x']) or int(attrib['padding_y']):
         res += [(
           tf.keras.layers.ZeroPadding2D(
             padding=(int(attrib['padding_x']), int(attrib['padding_y']))
@@ -377,19 +381,24 @@ class Layers:
   def con_(attrib, str_weights, *args, **kwargs):
     str_weights = str_weights.split()
     def con__(layers, *args, **kwargs):
-      res = [(
-        tf.keras.layers.ZeroPadding2D(
-          padding=(int(attrib['padding_x']), int(attrib['padding_y']))
-        )(layers[-1][0]), 
-        'ZeroPadding2D'
-      )]
+      res, prev = [], layers[-1][0]
+      # add padding
+      if int(attrib['padding_x']) or int(attrib['padding_y']):
+        res += [(
+          tf.keras.layers.ZeroPadding2D(
+            padding=(int(attrib['padding_x']), int(attrib['padding_y']))
+          )(layers[-1][0]), 
+          'ZeroPadding2D'
+        )]
+        prev = res[-1][0]
+      
       layer = tf.keras.layers.Conv2D(
         padding='valid', 
         filters=int(attrib['num_filters']), 
         kernel_size=(int(attrib['nr']), int(attrib['nc'])), 
         strides=(int(attrib['stride_x']), int(attrib['stride_y']))
       )
-      res += [(layer(res[-1][0]), 'Conv2D')]
+      res += [(layer(prev), 'Conv2D')]
       layer.set_weights(
         np.array(
           [
