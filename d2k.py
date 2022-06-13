@@ -3,6 +3,7 @@ import xml.etree.ElementTree as xmlet
 import numpy as np 
 import tensorflow as tf 
 from functools import reduce 
+import enum
 
 class D2k:
   
@@ -29,9 +30,9 @@ class D2k:
   #
   
   def convert(self, **model_kwargs):
-    losses = {'loss_multiclass_log' : 'SparseCategoricalCrossentropy'}
-    # data will be a list of [layers, losses]
-    self.data = [ # the first element is a list of (KerasTensor, layer name)
+    losses = {'loss_multiclass_log' : 'sparse_categorical_crossentropy'}
+    # data will be a list of [tensors, losses]
+    self.data = [ # the first element is a list of KerasTensor s
       reduce( # L: mapped layers, x: current layer(unmapped)
         lambda L,x: L + getattr(Layers, x[0]+'_')(*x[1:])(L), 
         filter( # y: current layer (unmapped)
@@ -53,13 +54,28 @@ class D2k:
     
     # build the model
     self.data[0] = tf.keras.Model(
-      list(
+      list( # get all tensors with layer_type == Input
         map(
-          lambda x: x[0], 
-          filter(lambda y: y[1] == 'Input', self.data[0])
+          lambda x: Layers.remove_tensor_type(x), 
+          filter(
+            lambda y: 'layer_type' in y.__dict__ and (
+              y.__dict__['layer_type'] == Layers.Type.Input
+            ), 
+            self.data[0]
+          )
         )
       ), 
-      [self.data[0][-1][0]], 
+      list( # get all tensors with layer_type == Output
+        map(
+          lambda x: Layers.remove_tensor_type(x), 
+          filter(
+            lambda y: 'layer_type' in y.__dict__ and (
+              y.__dict__['layer_type'] == Layers.Type.Output
+            ), 
+            self.data[0]
+          )
+        )
+      ), 
       **model_kwargs
     )
     
@@ -69,31 +85,46 @@ class D2k:
 
 class Layers:
   
-  def get_ref_id(layers, rid):
-    # get tags with id=rid in reverse order
-    tags = list(
-      map(
-        lambda x: len(layers)-1-x[0], 
-        filter(
-          lambda y: y[1][1] == 'Tag' and y[1][0].__dict__['tag'] == rid, 
-          enumerate(layers[::-1])
-        )
-      )
-    )
-    return tags[0] if len(tags) else -1
+  class Type(enum.Enum):
+    Input = 0
+    Hidden = 1
+    Output = 2
+  #
+  
+  # gets the last tensor with tag == rid
+  def get_ref(tensors, rid):
+    for t in tensors[::-1]:
+      if 'tag' in t.__dict__ and t.__dict__['tag'] == rid:
+        return t
+    raise RuntimeError('get_ref: layer with tag ' + rid + 'was not found.')
+  #
+  
+  # adds a layer type to tensor (used to track inputs and outputs)
+  def add_tensor_type(tensor, value):
+    tensor.__dict__['layer_type'] = value
+    return tensor
+  #
+  
+  # removes layer type from tensor
+  # called when outputs need to be updated 
+  # (when a layer is no longer an output)
+  def remove_tensor_type(tensor):
+    if 'layer_type' in tensor.__dict__:
+      if tensor.__dict__['layer_type'] != Layers.Type.Input:
+        del tensor.__dict__['layer_type']
+    return tensor
   #
   
   ##############
   ##  layers  ##
   ##############
   
-  def input_rgb_image_(*args, **kwargs):
+  # RGB image with unknown size
+  def input_rgb_image_(attrib, *args, **kwargs):
     def input_rgb_image__(*args, **kwargs):
-      return [(
-        tf.keras.Input(
-          shape=(None, None, 3)
-        ), 
-        'Input'
+      return [Layers.add_tensor_type(
+        tf.keras.Input(shape=(None, None, 3)), 
+        Layers.Type.Input
       )]
     #
     return input_rgb_image__
@@ -101,320 +132,350 @@ class Layers:
   
   def input_rgb_image_sized_(attrib, *args, **kwargs):
     def input_rgb_image_sized__(*args, **kwargs):
-      return [(
+      return [Layers.add_tensor_type(
         tf.keras.Input(
-          shape=(
-            int(attrib['nr']), 
-            int(attrib['nc']), 
-            3
-          )
+          shape=(int(attrib['nc']), int(attrib['nr']), 3)
         ), 
-        'Input'
+        Layers.Type.Input
       )]
     #
     return input_rgb_image_sized__
   #
   
   def relu_(*args, **kwargs):
-    def relu__(layers, *args, **kwargs):
-      return [(tf.keras.layers.ReLU()(layers[-1][0]), 'ReLU')]
+    def relu__(tensors, *args, **kwargs):
+      return [Layers.add_tensor_type(
+        tf.keras.layers.ReLU()(Layers.remove_tensor_type(tensors[-1])), 
+        Layers.Type.Output
+      )]
     #
     return relu__
   #
   
   def softmax_(*args, **kwargs):
-    def softmax__(layers, *args, **kwargs):
-      return [(tf.keras.layers.Softmax()(layers[-1][0]), 'Softmax')]
+    def softmax__(tensors, *args, **kwargs):
+      return [Layers.add_tensor_type(
+        tf.keras.layers.Softmax()(Layers.remove_tensor_type(tensors[-1])), 
+        Layers.Type.Output
+      )]
     #
     return softmax__
   #
   
   def multiply_(attrib, *args, **kwargs):
-    def multiply__(layers, *args, **kwargs):
-      return [(
-        tf.keras.layers.Rescaling(
-          scale=float(attrib['val'])
-        )(layers[-1][0]), 
-        'Rescaling'
+    def multiply__(tensors, *args, **kwargs):
+      return [Layers.add_tensor_type(
+        tf.keras.layers.Rescaling(scale=float(attrib['val']))(
+          Layers.remove_tensor_type(tensors[-1])
+        ), 
+        Layers.Type.Output
       )]
     #
     return multiply__
   #
   
   def tag_(attrib, *args, **kwargs):
-    def tag__(layers, *args, **kwargs):
-      res = tf.keras.layers.Layer(
-        name='tag_' + attrib['id'] + '_' + attrib['idx']
-      )(layers[-1][0])
-      res.__dict__['tag'] = int(attrib['id'])
-      return [(res, 'Tag')]
+    def tag__(tensors, *args, **kwargs):
+      # nop; only adds a tag to the last tensor
+      tensors[-1].__dict__['tag'] = int(attrib['id'])
+      return []
     #
     return tag__
   #
   
-  # outputs the 'id' layer's output
   def skip_(attrib, *args, **kwargs):
-    def skip__(layers, *args, **kwargs):
-      return [(
-        tf.keras.layers.Layer(
-          name='skip_' + attrib['id'] + '_' + attrib['idx']
-        )(
-          layers[Layers.get_ref_id(layers, int(attrib['id']))][0]
-        ), 
-        'Skip'
-      )]
+    def skip__(tensors, *args, **kwargs):
+      ref = Layers.get_ref(tensors, int(attrib['id']))
+      del ref.__dict__['tag'] # remove tag
+      Layers.remove_tensor_type(tensors[-1])
+      return [Layers.add_tensor_type(
+        tf.keras.layers.Layer()(ref), 
+        Layers.Type.Output
+      )] # output tagged layer's output
     #
     return skip__
   #
   
   def add_prev_(attrib, *args, **kwargs):
-    def add_prev__(layers, *args, **kwargs):
-      res, prev = [], layers[-1][0]
-      ref = layers[Layers.get_ref_id(layers, int(attrib['tag']))][0]
+    def add_prev__(tensors, *args, **kwargs):
+      inputs = [
+        Layers.remove_tensor_type(tensors[-1]), # last tensor
+        Layers.get_ref(tensors, int(attrib['tag'])) # tagged tensor
+      ]
       
-      def size_shape(delta, tensors, layer, name, *params):
-        list_or_tuple = lambda *p: [*p] if len(p) > 1 else p[0]
-        r = [(
-          layer(list_or_tuple(
-            tensors[0] if delta < 0 else tensors[1], 
-            *params
-          )), 
-          name
-        )] if delta else []
-        if delta < 0:
-          tensors = (r[0][0], tensors[1])
-        elif delta > 0:
-          tensors = (tensors[0], r[0][0])
-        # returns:
-        # 1 - updated layer list
-        # 2 - updated prev, ref tensors
-        # 3 - tuple of shape differences between prev and ref
-        return res + r, *tensors, tuple(x-y if x and y else 0 for x,y in zip(
-          *(
-            # tensor shapes
-            tuple(map(lambda x: x if x else 0, tensors[0].shape)), 
-            tuple(map(lambda x: x if x else 0, tensors[1].shape))
+      del inputs[1].__dict__['tag'] # remove tag
+      # tuple of shape differences
+      delta = tuple(
+        abs(x-y) if x and y else 0 for x,y in zip(
+          inputs[0].shape, inputs[1].shape
+        )
+      )
+      
+      # there is at least 1 dim that should be padded
+      if delta > tuple(0 for x in range(len(delta))):
+        def zero_pad_tensors(ts):
+          # gets the max shape in ts, then zero pads every tensor
+          # with the difference between max shape and ts[i].shape
+          get_valid = lambda t: tuple(x if x else 0 for x in t)
+          max_shape = tuple(
+            max(get_valid(tp)) for tp in zip(*tuple(t.shape for t in ts))
           )
-        ))
-      
-      delta = 0
-      res, prev, ref, delta = size_shape(delta, (prev, ref), None, '')
-      
-      if delta[1]: # delta_x != 0
-        res, prev, ref, delta = size_shape(
-          delta[1], (pref, ref), 
-          tf.keras.layers.ZeroPadding2D(
-            padding=((0, abs(delta[0])), (0, 0))
-          ), 
-          'ZeroPadding2D', 
-        )
-      
-      if delta[2]: # delta_y != 0
-        res, prev, ref, delta = size_shape(
-          delta[2], (prev, ref), 
-          tf.keras.layers.ZeroPadding2D(
-            padding=((0, 0), (0, abs(delta[1])))
-          ), 
-          'ZeroPadding2D'
-        )
-      
-      if delta[3]: # delta_z != 0
-        # shape difference
-        shape_delta = prev.shape[1:-1] if delta[3] < 0 else ref.shape[1:-1]
-        shape_delta += [abs(delta[3])]
-        
-        res, prev, ref, delta = size_shape(
-          delta[3], (prev, ref), 
-          tf.keras.layers.Concatenate(axis=3), 
-          'Concatenate', 
-          tf.keras.layers.Lambda(lambda x: x)(
-            tf.zeros_like(
-              tf.Variable(
-                [[[[0 for x in range(0, shape_delta[2])]]]], 
-                shape=[None, None, None, shape_delta[2]]
-              ), 
-              dtype=tf.float32
+          """
+          shape_deltas = list(
+            map(
+              # (0, shape dim difference) if dim != None else (0, 0)
+              # x == tuple(dim index, dim)
+              lambda x: (0, x[1]-tf.shape(t)[x[0]]) if x[1] else (0, 0), 
+              enumerate(max_shape)
             )
           )
-        )
+          """
+          return [tf.pad(
+            Layers.remove_tensor_type(t), 
+            list(
+              map(
+                # (0, shape dim difference) if dim != None else (0, 0)
+                # x == tuple(dim index, dim)
+                lambda x: (0, x[1]-tf.shape(t)[x[0]]) if x[1] else (0, 0), 
+                enumerate(max_shape)
+              )
+            )
+          ) for t in ts]
+        #
+        inputs = tf.keras.layers.Lambda(zero_pad_tensors)(inputs)
       
-      return res + [(
-        tf.keras.layers.Add()([prev, ref]), 
-        'Add'
+      return [Layers.add_tensor_type(
+        tf.keras.layers.Add()(inputs), 
+        Layers.Type.Output
       )]
     #
     return add_prev__
   #
   
   def affine_con_(attrib, str_weights, *args, **kwargs):
-    str_weights = str_weights.split()
-    def affine_con__(layers, *args, **kwargs):
-      layer = tf.keras.layers.LayerNormalization()
-      res = layer(layers[-1][0])
-      layer.set_weights(
-        np.array([
-          np.array(str_weights[:-len(str_weights)//2]).astype(np.float32), 
-          np.array(str_weights[len(str_weights)//2:]).astype(np.float32)
-        ], dtype=object)
-      )
-      return [(res, 'LayerNormalization')]
+    str_weights = str_weights.split() # get list of lines (one weight/line)
+    def affine_con__(tensors, *args, **kwargs):
+      # BatchNormalization should behave like affine_con when training=False 
+      # and (moving_mean, moving_variance) = (0, 1)
+      # Its formula is:
+      #                input - moving_mean
+      # gamma * --------------------------------- + beta
+      #          sqrt(moving_variance + epsilon)
+      # 
+      layer = tf.keras.layers.BatchNormalization(epsilon=0)
+      result = layer(Layers.remove_tensor_type(tensors[-1]))
+      if len(str_weights): # there are weights
+        layer.set_weights(
+          # input weights order is (gamma, beta)
+          np.array([ # weights order is: (gamma, beta, mean, var)
+            np.array(str_weights[:-len(str_weights)//2]).astype(np.float32), 
+            np.array(str_weights[len(str_weights)//2:]).astype(np.float32), 
+            np.full((tensors[-1].shape[-1]), 0), 
+            np.full((tensors[-1].shape[-1]), 1)
+          ], dtype=object)
+        )
+      return [Layers.add_tensor_type(result, Layers.Type.Output)]
     #
     return affine_con__
   #
   
   def avg_pool_(attrib, *args, **kwargs):
-    def avg_pool__(layers, *args, **kwargs):
-      res, prev = [], layers[-1][0]
-      # add padding
-      if int(attrib['padding_x']) or int(attrib['padding_y']):
-        res += [(
-          tf.keras.layers.ZeroPadding2D(
-            padding=(int(attrib['padding_x']), int(attrib['padding_y']))
-          )(prev), 
-          'ZeroPadding2D'
-        )]
-        prev = res[-1][0]
+    def avg_pool__(tensors, *args, **kwargs):
+      res = []
       
-      res += [(
+      # add padding ?
+      if int(attrib['padding_x']) or int(attrib['padding_y']):
+        res = [Layers.add_tensor_type(
+          tf.keras.layers.ZeroPadding2D(
+            padding=(int(attrib['padding_y']), int(attrib['padding_x']))
+          )(Layers.remove_tensor_type(tensors[-1])), 
+          Layers.Type.Hidden
+        )]
+      
+      return [Layers.add_tensor_type(
         tf.keras.layers.AveragePooling2D(
-          padding='valid', 
           pool_size=(int(attrib['nr']), int(attrib['nc'])), 
-          strides=(int(attrib['stride_x']), int(attrib['stride_y']))
-        )(prev), 
-        'AveragePooling2D'
+          strides=(int(attrib['stride_y']), int(attrib['stride_x']))
+        )(res[-1] if res else Layers.remove_tensor_type(tensors[-1])), 
+        Layers.Type.Output
       )]
-      return res
     #
-    def global_avg_pool__(layers, *args, **kwargs):
-      return [(
+    def global_avg_pool__(tensors, *args, **kwargs):
+      return [Layers.add_tensor_type(
         tf.keras.layers.GlobalAveragePooling2D(
           keepdims=True
-        )(layers[-1][0]), 
-        'GlobalAveragePooling2D'
+        )(Layers.remove_tensor_type(tensors[-1])), 
+        Layers.Type.Output
       )]
     #
+    
+    # pool size dim == 0 means that dim == input dim
     if int(attrib['nr']) and int(attrib['nc']):
       return avg_pool__
     return global_avg_pool__
   #
   
   def max_pool_(attrib, *args, **kwargs):
-    def max_pool__(layers, *args, **kwargs):
-      res, prev = [], layers[-1][0]
-      # add padding
-      if int(attrib['padding_x']) or int(attrib['padding_y']):
-        res += [(
-          tf.keras.layers.ZeroPadding2D(
-            padding=(int(attrib['padding_x']), int(attrib['padding_y']))
-          )(prev), 
-          'ZeroPadding2D'
-        )]
-        prev = res[-1][0]
+    def max_pool__(tensors, *args, **kwargs):
+      res = []
       
-      res += [(
+      # add padding ? 
+      if int(attrib['padding_x']) or int(attrib['padding_y']):
+        res = [Layers.add_tensor_type(
+          tf.keras.layers.ZeroPadding2D(
+            padding=(int(attrib['padding_y']), int(attrib['padding_x']))
+          )(Layers.remove_tensor_type(tensors[-1])), 
+          Layers.Type.Hidden
+        )]
+      
+      return res + [Layers.add_tensor_type(
         tf.keras.layers.MaxPooling2D(
-          padding='valid', 
           pool_size=(int(attrib['nr']), int(attrib['nc'])), 
-          strides=(int(attrib['stride_x']), int(attrib['stride_y']))
-        )(prev), 
-        'MaxPooling2D'
+          strides=(int(attrib['stride_y']), int(attrib['stride_x']))
+        )(res[-1] if res else Layers.remove_tensor_type(tensors[-1])), 
+        Layers.Type.Output
       )]
-      return res
     #
-    def global_max_pool__(layers, *args, **kwargs):
-      return [(
+    def global_max_pool__(tensors, *args, **kwargs):
+      return [Layers.add_tensor_type(
         tf.keras.layers.GlobalMaxPooling2D(
           keepdims=True
-        )(layers[-1][0]), 
-        'GlobalMaxPooling2D'
+        )(Layers.remove_tensor_type(tensors[-1])), 
+        Layers.Type.Output
       )]
     #
+    
+    # pool size dim == 0 means that dim == input dim
     if int(attrib['nr']) and int(attrib['nc']):
       return max_pool__
     return global_max_pool__
   #
   
   def fc_(attrib, str_weights, *args, **kwargs):
-    str_weights = list(
-      filter(
-        lambda x: x, 
-        str_weights.split('\n')
-      )
-    )
-    
-    def fc__(layers, *args, **kwargs):
-      res = [(tf.keras.layers.Flatten()(layers[-1][0]), 'Flatten')]
+    # split lines and remove empty lists
+    str_weights = list(filter(lambda x: x, str_weights.split('\n')))
+    def fc__(tensors, *args, **kwargs):
+      # Dense inputs should be always Flatten outputs
+      res = [
+        tf.keras.layers.Flatten()(Layers.remove_tensor_type(tensors[-1]))
+      ]
+      
+      use_bias_flag = True
+      if 'use_bias' in attrib and attrib['use_bias'] != 'true':
+        use_bias_flag = False
       layer = tf.keras.layers.Dense(
         units=int(attrib['num_outputs']), 
-        use_bias=True if attrib['use_bias'] == 'true' else False
+        use_bias=use_bias_flag
       )
-      res += [(layer(res[-1][0]), 'Dense')]
-      layer.set_weights(
-        np.array(
-          [
+      res += [Layers.add_tensor_type(layer(res[-1]), Layers.Type.Output)]
+      if len(str_weights): # there are weights
+        if use_bias_flag: # there are biases in weights
+          try:
+            layer.set_weights(
+              np.array(
+                [
+                  np.array(
+                    list(map(lambda x: x.split(), str_weights))
+                  )[:-1].reshape(
+                    np.array(res[-2].shape)[1], 
+                    int(attrib['num_outputs'])
+                  ).astype(np.float32), 
+                  np.array(str_weights[-1].split()).astype(np.float32)
+                ], dtype=object
+              )
+            )
+          except BaseException: # does not have biases or an exc was raised
+            # try creating layer without biases
+            use_bias_flag = False
+            layer.use_bias = False
+            res[-1] = Layers.add_tensor_type(
+              layer(res[-2]), 
+              Layers.Type.Output
+            )
+        
+        if not use_bias_flag: # no biases in weights
+          layer.set_weights(
             np.array(
-              list(map(lambda x: x.split(), str_weights))
-            )[:-1].reshape(
-              np.array(res[-2][0].shape)[1], 
-              int(attrib['num_outputs'])
-            ).astype(np.float32), 
-            np.array(str_weights[-1].split()).astype(np.float32)
-          ], 
-          dtype=object
-        ) if 'use_bias' in attrib and attrib['use_bias'] == 'true' else
-        np.array(
-          np.array(list(map(lambda x: x.split(), str_weights))), 
-          dtype=object
-        ).astype(np.float32)
-      )
+              np.array(list(map(lambda x: x.split(), str_weights))), 
+              dtype=object
+            ).astype(np.float32)
+          )
       return res
     #
     return fc__
   #
   
   def con_(attrib, str_weights, *args, **kwargs):
-    str_weights = str_weights.split()
-    def con__(layers, *args, **kwargs):
-      res, prev = [], layers[-1][0]
-      # add padding
+    str_weights = str_weights.split() # remove '\n'
+    def con__(tensors, *args, **kwargs):
+      res = []
+      use_bias_flag = True
+      if 'use_bias' in attrib and attrib['use_bias'] != 'true':
+        use_bias_flag = False
+      
+      # add padding ? 
       if int(attrib['padding_x']) or int(attrib['padding_y']):
-        res += [(
+        res = [
           tf.keras.layers.ZeroPadding2D(
-            padding=(int(attrib['padding_x']), int(attrib['padding_y']))
-          )(layers[-1][0]), 
-          'ZeroPadding2D'
-        )]
-        prev = res[-1][0]
+            padding=(int(attrib['padding_y']), int(attrib['padding_x']))
+          )(Layers.remove_tensor_type(tensors[-1]))
+        ]
       
       layer = tf.keras.layers.Conv2D(
-        padding='valid', 
         filters=int(attrib['num_filters']), 
         kernel_size=(int(attrib['nr']), int(attrib['nc'])), 
-        strides=(int(attrib['stride_x']), int(attrib['stride_y']))
+        strides=(int(attrib['stride_y']), int(attrib['stride_x'])), 
+        use_bias=use_bias_flag
       )
-      res += [(layer(prev), 'Conv2D')]
-      layer.set_weights(
-        np.array(
-          [
-            np.array(str_weights[:-int(attrib['num_filters'])]).reshape(
+      # insert Conv2D in output list
+      res += [Layers.add_tensor_type(
+        layer(res[-1] if res else Layers.remove_tensor_type(tensors[-1])), 
+        Layers.Type.Output
+      )]
+      
+      if len(str_weights): # there are weights
+        if use_bias_flag: # there are biases in weights
+          try:
+            layer.set_weights(
+              np.array(
+                [
+                  np.array(str_weights[:-int(attrib['num_filters'])]).reshape(
+                    int(attrib['nr']), 
+                    int(attrib['nc']), 
+                    np.array(tensors[-1].shape)[3], 
+                    int(attrib['num_filters'])
+                  ).astype(np.float32), 
+                  np.array(str_weights[-int(attrib['num_filters']):]).astype(
+                    np.float32
+                  )
+                ], dtype=object
+              )
+            )
+          except BaseException: # does not have biases or an exc was raised
+            # try creating layer without biases
+            use_bias_flag = False
+            layer = tf.keras.layers.Conv2D(
+              filters=int(attrib['num_filters']), 
+              kernel_size=(int(attrib['nr']), int(attrib['nc'])), 
+              strides=(int(attrib['stride_y']), int(attrib['stride_x'])), 
+              use_bias=False
+            )
+            res[-1] = Layers.add_tensor_type(
+              layer(
+                res[-2] if res else Layers.remove_tensor_type(tensors[-1])
+              ), 
+              Layers.Type.Output
+            )
+        
+        if not use_bias_flag: # no biases in weights
+          layer.set_weights(
+            np.array(str_weights, dtype=object).reshape(
               int(attrib['nr']), 
               int(attrib['nc']), 
-              np.array(layers[-1][0].shape)[3], 
+              np.array(tensors[-1].shape)[3], 
               int(attrib['num_filters'])
-            ).astype(np.float32), 
-            np.array(str_weights[-int(attrib['num_filters']):]).astype(
-              np.float32
-            )
-          ], 
-          dtype=object
-        ) if 'use_bias' in attrib and attrib['use_bias'] == 'true' else 
-        np.array(str_weights, dtype=object).reshape(
-          int(attrib['nr']), 
-          int(attrib['nc']), 
-          np.array(layers[-1][0].shape)[3], 
-          int(attrib['num_filters'])
-        ).astype(np.float32)
-      )
+            ).astype(np.float32)
+          )
       return res
     #
     return con__
