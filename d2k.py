@@ -220,16 +220,7 @@ class Layers:
           max_shape = tuple(
             max(get_valid(tp)) for tp in zip(*tuple(t.shape for t in ts))
           )
-          """
-          shape_deltas = list(
-            map(
-              # (0, shape dim difference) if dim != None else (0, 0)
-              # x == tuple(dim index, dim)
-              lambda x: (0, x[1]-tf.shape(t)[x[0]]) if x[1] else (0, 0), 
-              enumerate(max_shape)
-            )
-          )
-          """
+          
           return [tf.pad(
             Layers.remove_tensor_type(t), 
             list(
