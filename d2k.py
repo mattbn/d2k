@@ -310,12 +310,12 @@ class Layers:
       if int(attrib['padding_x']) or int(attrib['padding_y']):
         padding = 'same'
       
-      return res + [Layers.add_tensor_type(
+      return [Layers.add_tensor_type(
         tf.keras.layers.MaxPooling2D(
           padding=padding, 
           pool_size=(int(attrib['nr']), int(attrib['nc'])), 
           strides=(int(attrib['stride_y']), int(attrib['stride_x']))
-        )(res[-1] if res else Layers.remove_tensor_type(tensors[-1])), 
+        )(Layers.remove_tensor_type(tensors[-1])), 
         Layers.Type.Output
       )]
     #
@@ -422,10 +422,10 @@ class Layers:
                   np.transpose(
                     np.array(
                       str_weights[:-int(attrib['num_filters'])]).reshape(
-                        int(attrib['nr']), 
-                        int(attrib['nc']), 
+                        int(attrib['num_filters']), 
                         np.array(tensors[-1].shape)[3], 
-                        int(attrib['num_filters'])
+                        int(attrib['nr']), 
+                        int(attrib['nc'])
                       ).astype(np.float32), 
                       [2, 3, 1, 0]
                   ), 
@@ -454,10 +454,10 @@ class Layers:
           layer.set_weights(
             np.transpose(
               np.array(str_weights, dtype=object).reshape(
-                int(attrib['nr']), 
-                int(attrib['nc']), 
+                int(attrib['num_filters']), 
                 np.array(tensors[-1].shape)[3], 
-                int(attrib['num_filters'])
+                int(attrib['nr']), 
+                int(attrib['nc'])
               ).astype(np.float32), 
               [2, 3, 1, 0]
             )
