@@ -4,7 +4,7 @@ from tensorflow.keras.utils import plot_model
 
 m = D2k().from_file(
   input('path: ')
-).convert().data[0]
+).convert().data
 
 m.summary()
 input('')
