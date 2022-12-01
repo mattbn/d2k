@@ -7,8 +7,9 @@ import enum
 
 class D2k:
   
-  def __init__(self):
+  def __init__(self, path=''):
     self.data = []
+    if path: self.from_file(path).convert()
   #
   
   def from_string(self, s):
